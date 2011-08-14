@@ -199,6 +199,12 @@ class _Ctype(object):
         """
         if this is None:
             return None
+
+        if this._as_parameter_ is None:
+            # Avoid passing possibly invalid pointers to libvlc. To
+            # fix this error, do not use libvlc objects after you have
+            # released them.
+            raise ValueError("The %s argument has been released and may be invalid" % type(this))
         return this._as_parameter_
 
 class ListPOINTER(object):
@@ -225,14 +231,91 @@ def string_result(result, func, arguments):
         return s
     return None
 
+class ObjRef(object):
+    "A reference to a reference counted VLC object"
+    def __init__(self, obj):
+        self.obj = obj
+        self.count = 1
+        self.event_manager = None
+
+# A cache of all libvlc objects currently retained by the user of the
+# the library. 
+_managed_objects = {}
+
+# Some ctypes errcheck functions that are passed to _Cfunction
+
+def retain_arg(result, func, arguments):
+    """Retains the argument object."""
+    ptr = arguments[0]._as_parameter_.value
+    ref = _managed_objects.get(ptr)
+    if ref is None:
+        raise KeyError('Cannot retain unknown object %s' % ptr)
+    # TODO: Thread safety?
+    ref.count += 1
+
+def release_arg(result, func, arguments):
+    """Releases the argument object."""
+    ptr = arguments[0]._as_parameter_.value
+    ref = _managed_objects.get(ptr)
+    if ref is None:
+        raise KeyError('Cannot release unknown object %s' % ptr)
+
+    # TODO: Thread safety?
+    ref.count -= 1
+    if ref.count == 0:
+        # The object could be destroyed if libvlc doesn't have a
+        # reference. Remove all of the python state associated with
+        # the object, including event callbacks.
+        if ref.event_manager is not None:
+            ref.event_manager.event_detach_all()
+            # ensure event manager can't be used
+            ref.event_manager._as_parameter_ = None
+
+        # Setting _as_parameter_ to None ensures the object can't be
+        # passed to any libvlc functions. Checked in _Ctype.from_param
+        ref.obj._as_parameter_ = None
+
+        del _managed_objects[ptr]
+
 def class_result(classname):
-    """Errcheck function. Returns a function that creates the specified class.
-    """
+    """Returns a function that creates the specified class."""
     def wrap_errcheck(result, func, arguments):
         if result is None:
             return None
         return classname(result)
     return wrap_errcheck
+
+def managed_class_result(classname):
+    """Returns a function that either gets an object from the object
+    cache or creates an object of the specified class.
+    """
+    def wrap_errcheck(result, func, arguments):
+        if result is None:
+            return None
+
+        ref = _managed_objects.get(result)
+        if ref is None:
+            _managed_objects[result] = ref = ObjRef(classname(result))
+        else:
+            # increment the object's ref count because libvlc
+            # implicitly calls retain in functions that return
+            # pointers
+            ref.count += 1
+
+        return ref.obj
+    return wrap_errcheck
+
+def event_manager_errcheck(result, func, arguments):
+    """Returns the cached EventManager object"""
+    ptr = arguments[0]._as_parameter_.value
+    ref = _managed_objects.get(ptr)
+    if ref is None:
+        raise KeyError('Cannot get event manager of unknown object %s' % ptr)
+
+    if ref.event_manager is None:
+        ref.event_manager = EventManager(result)
+    
+    return ref.event_manager
 
  # Generated enum types #
 # GENERATED_ENUMS go here  # see generate.py

@@ -377,7 +377,7 @@ class EventManager:
     for each event type in an EventManager instance.
     """
     _callback_handler = None
-    _callbacks = {}
+    _callbacks = None
 
     def __new__(cls, ptr=_internal_guard):
         if ptr == _internal_guard:
@@ -442,3 +442,10 @@ class EventManager:
         if k in self._callbacks:
             del self._callbacks[k] # remove, regardless of libvlc return value
             libvlc_event_detach(self, k, self._callback_handler, k)
+
+    def event_detach_all(self):
+        """Unregister all event listeners"""
+        for k in self._callbacks:
+            libvlc_event_detach(self, k, self._callback_handler, k)
+
+        self._callbacks.clear()

@@ -27,6 +27,7 @@
 
 import unittest
 import vlc
+import ctypes
 print "Checking ", vlc.__file__
 
 class TestVLCAPI(unittest.TestCase):
@@ -121,6 +122,73 @@ class TestVLCAPI(unittest.TestCase):
             # Ensure that messages can be read.
             self.assertNotEqual(len(m.message), 0)
         l.close()
+
+    def obj_ref(self, obj):
+        """Get the vlc.ObjRef from vlc's object cache for the given
+        obj. Returns None if the object isn't cached."""
+        if not isinstance(obj, (long, int)):
+            if obj._as_parameter_ is None:
+                return None
+            obj = obj._as_parameter_.value
+        return vlc._managed_objects.get(obj)
+
+    def test_objects_wrapped(self):
+        i=vlc.Instance()
+        m=i.media_new('/tmp/foo.avi')
+        p=i.media_player_new()
+        p.set_media(m)
+        self.assertEqual(self.obj_ref(m).count, 1)
+        # ensure exact same object is returned
+        self.assertTrue(m is p.get_media())
+        # calling p.get_media implicitly retains the returned media
+        self.assertEqual(self.obj_ref(m).count, 2)
+        # ensure event manager is always the same obj
+        self.assertTrue(p.event_manager() is p.event_manager())
+
+    def test_objects_retain_release(self):
+        i=vlc.Instance()
+        self.assertEqual(self.obj_ref(i).count, 1)
+        i.retain()
+        self.assertEqual(self.obj_ref(i).count, 2)
+        i.retain()
+        self.assertEqual(self.obj_ref(i).count, 3)
+        i.release()
+        self.assertEqual(self.obj_ref(i).count, 2)
+        i.release()
+        self.assertEqual(self.obj_ref(i).count, 1)
+        i.release()
+        self.assertEquals(self.obj_ref(i), None)
+
+    def test_objects_released(self):
+        i=vlc.Instance()
+        p=i.media_player_new()
+        m=i.media_new('/tmp/foo.avi')
+        p.set_media(m)
+        
+        e=m.event_manager()
+        self.assertFalse(e._callbacks)
+        e.event_attach(vlc.EventType.MediaStateChanged, lambda x: None)
+        self.assertTrue(e._callbacks)
+
+        m.release()
+
+        # after releasing, the callbacks should be unregistered for
+        # the old event manager
+        self.assertFalse(e._callbacks)
+        
+        # after releasing, a new python wrapper should be returned
+        m2 = p.get_media()
+        self.assertFalse(m is m2)
+        # with a new event manager
+        self.assertFalse(e is m2.event_manager())
+
+        # after releasing, the old Media and EventManager objects
+        # should be useless
+        with self.assertRaises(ctypes.ArgumentError):
+            m.get_mrl()
+
+        with self.assertRaises(ctypes.ArgumentError):
+            e.event_attach(vlc.EventType.MediaSubItemAdded, lambda x: None)
 
 if __name__ == '__main__':
     unittest.main()

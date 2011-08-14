@@ -736,21 +736,27 @@ class PythonGenerator(_Generator):
         'WINDOWHANDLE': 'ctypes.c_ulong',
     }
 
-    # Python classes, i.e. classes for which we want to
-    # generate class wrappers around libvlc functions
-    defined_classes = (
-        'EventManager',
+    # Set of classes that have an explicit reference count maintained
+    # on the python side. Objects of these classes, and their event
+    # managers, are cached in a python dict.
+    managed_classes = set((
         'Instance',
-        'Log',
-        'LogIterator',
         'Media',
         'MediaDiscoverer',
         'MediaLibrary',
         'MediaList',
-        'MediaListPlayer',
-        'MediaListView',
         'MediaPlayer',
-    )
+        'MediaListPlayer'
+        ))
+
+    # Python classes, i.e. classes for which we want to
+    # generate class wrappers around libvlc functions
+    defined_classes = set((
+        'EventManager',
+        'Log',
+        'LogIterator',
+        'MediaListView',
+    ) + tuple(managed_classes))
 
     def __init__(self, parser=None):
         """New instance.
@@ -813,19 +819,35 @@ class PythonGenerator(_Generator):
                 if rtype != 'ctypes.c_char_p':
                     raise TypeError('Function %s expected to return char* not %s' % (name, f.type))
                 errcheck = 'string_result'
-                types = ['ctypes.c_void_p'] + types
+                rtype = 'ctypes.c_void_p'
+            elif name.endswith('_retain') and \
+                    len(types) == 1 and types[0] in self.managed_classes:
+                # update the object reference count
+                errcheck = 'retain_arg'
+            elif name.endswith('_release') and \
+                    len(types) == 1 and types[0] in self.managed_classes:
+                # update the object reference count
+                errcheck = 'release_arg'
+            elif name.endswith('_event_manager') and rtype == 'EventManager' and \
+                    len(types) == 1 and types[0] in self.managed_classes:
+                errcheck = 'event_manager_errcheck'
+                rtype = 'ctypes.c_void_p'
             elif rtype in self.defined_classes:
                 # if the result is a pointer to one of the defined
                 # classes then we tell ctypes that the return type is
                 # ctypes.c_void_p so that 64-bit pointers are handled
                 # correctly, and then create a Python object of the
                 # result
-                errcheck = 'class_result(%s)' % rtype
-                types = [ 'ctypes.c_void_p'] + types
+                if rtype in self.managed_classes:
+                    errcheck = 'managed_class_result(%s)' % rtype
+                else:
+                    errcheck = 'class_result(%s)' % rtype
+
+                rtype = 'ctypes.c_void_p'
             else:
                 errcheck = 'None'
-                types.insert(0, rtype)
 
+            types.insert(0, rtype)
             types = ', '.join(types)
 
             # xformed doc string with first @param
